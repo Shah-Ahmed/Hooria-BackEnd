@@ -1,4 +1,6 @@
 // /api/organizations/:id   (SUPER ADMIN only)
+//   PATCH  -> change the organization details and/or its user limit
+//             body: any of { name, type, address, description, city, country, phone, website, userLimit }
 //   DELETE -> "delete" the organization AND all its users (admin + normal users).
 //             This is a SOFT delete: nothing is removed from the database.
 //             The organization and its users get isActive = false and their logins are disabled.
@@ -6,10 +8,31 @@
 import { apiHandler, json, preflight } from "@/lib/api";
 import { HttpError } from "@/lib/errors";
 import { getAdminAuth, getAdminDb } from "@/lib/firebaseAdmin";
+import { countNormalUsers, parseOrgDetails, toOrganizationInfo } from "@/lib/orgs";
+import { readJson } from "@/lib/validate";
 import type { OrganizationDoc, UserDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
 export const OPTIONS = preflight;
+
+export const PATCH = apiHandler({ roles: ["super_admin"] }, async ({ request, params }) => {
+  const id = params.id;
+  const body = await readJson(request);
+  const changes = parseOrgDetails(body, true);
+  if (Object.keys(changes).length === 0) throw new HttpError(400, "Nothing to update");
+
+  const orgRef = getAdminDb().collection("organizations").doc(id);
+  const orgSnap = await orgRef.get();
+  const org = orgSnap.data() as OrganizationDoc | undefined;
+  if (!org || org.isActive === false) throw new HttpError(404, "Organization not found");
+
+  // Lowering the limit below the current number of users is allowed:
+  // existing users stay, but nobody new can be added until the count is under the limit.
+  await orgRef.update(changes);
+
+  const updated: OrganizationDoc = { ...org, ...changes };
+  return json(toOrganizationInfo(id, updated, await countNormalUsers(id)));
+});
 
 export const DELETE = apiHandler({ roles: ["super_admin"] }, async ({ params }) => {
   const id = params.id;

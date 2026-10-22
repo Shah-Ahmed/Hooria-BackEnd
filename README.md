@@ -10,8 +10,8 @@ Frontend alag project hai (`techproject-frontend`, port 3000).
 
 | Role | Kaun | Kya kar sakta hai |
 |---|---|---|
-| `super_admin` | Sirf ek, setup script se banta hai | Organizations create / list / delete (soft delete). Har organization ke liye uska admin account banata hai |
-| `admin` | Har organization ka ek admin | Apni organization ke users create / list / delete (soft delete) |
+| `super_admin` | Sirf ek, setup script se banta hai | Organizations create / list / edit / delete (soft delete), har organization ka user limit set karna, aur organization ke users ki **sirf dekhne wali (read-only)** list. Har organization ke liye uska admin account banata hai |
+| `admin` | Har organization ka ek admin | Apni organization ke users create / list / delete (soft delete), limit tak. Limit poori hone par naya user nahi bana sakta |
 | `user` | Admin ke banaye hue users | Login karke apna profile dekh sakte hain |
 
 ---
@@ -75,11 +75,14 @@ Sab endpoints par token chahiye (sirf `/api/health` public hai).
 |---|---|---|---|---|
 | GET | `/api/health` | public | - | Server check |
 | GET | `/api/me` | koi bhi logged-in | - | Mera role, naam, organization |
-| GET | `/api/organizations` | super_admin | - | Saari organizations |
-| POST | `/api/organizations` | super_admin | `name, adminName, adminEmail, adminPassword` | Organization + uska admin banao |
+| GET | `/api/organizations` | super_admin | - | Saari organizations (details, `userLimit`, `userCount`, `limitReached` ke saath) |
+| POST | `/api/organizations` | super_admin | `name, type, address, userLimit, adminName, adminEmail, adminPassword` (optional: `description, city, country, phone, website`) | Organization + uska admin banao |
+| PATCH | `/api/organizations/:id` | super_admin | koi bhi: `name, type, address, description, city, country, phone, website, userLimit` | Organization ki details / user limit badlo |
+| GET | `/api/organizations/:id/users` | super_admin | - | Organization ke users ki **read-only** list (admin + users). Is par koi create / edit / delete route nahi hai |
+| GET | `/api/my-organization` | admin | - | Meri organization ki details, user limit, kitne users hain, `limitReached` |
 | DELETE | `/api/organizations/:id` | super_admin | - | Organization "delete" (soft): organization aur uske saare users ka `isActive` false, login disable. Record database mein rehta hai |
 | GET | `/api/users` | admin | - | Meri organization ke users |
-| POST | `/api/users` | admin | `name, email, password` | Meri organization mein user banao |
+| POST | `/api/users` | admin | `name, email, password` | Meri organization mein user banao. Limit poori ho to `403` ("User limit reached ...") |
 | DELETE | `/api/users/:id` | admin | - | Meri organization ka user "delete" (soft): `isActive` false, login disable. Record database mein rehta hai |
 
 Errors is shape mein aate hain: `{ "error": "message" }`.
@@ -99,11 +102,14 @@ src/
 │       ├── me/route.ts
 │       ├── organizations/route.ts
 │       ├── organizations/[id]/route.ts
+│       ├── organizations/[id]/users/route.ts   # super admin ke liye read-only users list
+│       ├── my-organization/route.ts            # admin: apni organization + limit
 │       ├── users/route.ts
 │       └── users/[id]/route.ts
 ├── lib/
 │   ├── api.ts                    # CORS, JWT verify, role check, error handling
 │   ├── accounts.ts               # Auth user + Firestore profile create / soft delete (deactivate)
+│   ├── orgs.ts                   # Organization helpers: users count, limit, details validation
 │   ├── firebaseAdmin.ts          # Firebase Admin init
 │   ├── validate.ts               # Input validation
 │   └── errors.ts                 # HttpError
@@ -128,7 +134,16 @@ export const GET = apiHandler({ roles: ["admin"] }, async ({ auth }) => {
 
 ## Firestore data
 
-- `users/{uid}` → `{ name, email, role, orgId, createdAt }`
-- `organizations/{orgId}` → `{ name, adminUid, adminName, adminEmail, createdAt }`
+- `users/{uid}` → `{ name, email, role, orgId, createdAt, isActive }`. Document id hi user ki id hai, document ke andar alag `user_id` field nahi hai.
+- `organizations/{orgId}` → `{ name, type, description, address, city, country, phone, website, userLimit, adminUid, adminName, adminEmail, createdAt, isActive }`
+
+Purani organizations (jinmein nayi fields nahi hain) ab bhi chalti hain: nayi fields khali dikhti hain aur `userLimit` na ho to koi limit nahi lagti, jab tak super admin set na kare.
+
+### User limit kaise kaam karta hai
+
+- Limit `POST /api/users` ke **code** mein check hoti hai (`src/app/api/users/route.ts`). Firebase Authentication ya Firestore rules ka isse koi taalluq nahi.
+- Sirf normal users (role `user`) gine jaate hain, organization admin nahi. Soft-deleted users nahi gine jaate.
+- Do requests ek saath aayein to bhi limit cross nahi hoti (har organization ke liye create ek ek karke chalta hai).
+- Super admin limit ko current users se kam par bhi set kar sakta hai: purane users rehte hain, bas naya koi add nahi hota.
 
 Database sirf backend (Admin SDK) se access hota hai. `firestore.rules` mein direct access band hai (Firebase Console mein ye rules publish kar sakte ho).

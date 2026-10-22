@@ -1,13 +1,15 @@
 // /api/organizations   (SUPER ADMIN only)
-//   GET  -> list all organizations
+//   GET  -> list all organizations (with details, user limit and current user count)
 //   POST -> create an organization together with its admin account
-//           body: { name, adminName, adminEmail, adminPassword }
+//           body: { name, type, address, userLimit, adminName, adminEmail, adminPassword,
+//                   description?, city?, country?, phone?, website? }
 
 import { apiHandler, json, preflight } from "@/lib/api";
 import { createAccount, deleteAccount } from "@/lib/accounts";
 import { getAdminDb } from "@/lib/firebaseAdmin";
+import { countNormalUsersByOrg, parseOrgDetails, toOrganizationInfo } from "@/lib/orgs";
 import { readJson, requireEmail, requirePassword, requireString } from "@/lib/validate";
-import type { OrganizationDoc } from "@/types";
+import type { OrgDetails, OrganizationDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
 export const OPTIONS = preflight;
@@ -17,18 +19,19 @@ export const GET = apiHandler({ roles: ["super_admin"] }, async () => {
     .collection("organizations")
     .orderBy("createdAt", "desc")
     .get();
+  const counts = await countNormalUsersByOrg();
 
   // "deleted" organizations (isActive = false) stay in the database but are not listed
   const organizations = snapshot.docs
-    .map((doc) => ({ id: doc.id, ...(doc.data() as OrganizationDoc) }))
-    .filter((org) => org.isActive !== false);
+    .filter((doc) => (doc.data() as OrganizationDoc).isActive !== false)
+    .map((doc) => toOrganizationInfo(doc.id, doc.data() as OrganizationDoc, counts.get(doc.id) ?? 0));
 
   return json(organizations);
 });
 
 export const POST = apiHandler({ roles: ["super_admin"] }, async ({ request }) => {
   const body = await readJson(request);
-  const name = requireString(body, "name", { min: 2 });
+  const details = parseOrgDetails(body, false) as OrgDetails;
   const adminName = requireString(body, "adminName", { min: 2 });
   const adminEmail = requireEmail(body, "adminEmail");
   const adminPassword = requirePassword(body, "adminPassword");
@@ -46,7 +49,7 @@ export const POST = apiHandler({ roles: ["super_admin"] }, async ({ request }) =
 
   // 2) create the organization; if this fails, remove the admin again
   const organization: OrganizationDoc = {
-    name,
+    ...details,
     adminUid: uid,
     adminName,
     adminEmail,
@@ -60,5 +63,5 @@ export const POST = apiHandler({ roles: ["super_admin"] }, async ({ request }) =
     throw error;
   }
 
-  return json({ id: orgRef.id, ...organization }, 201);
+  return json(toOrganizationInfo(orgRef.id, organization, 0), 201);
 });
